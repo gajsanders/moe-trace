@@ -1,9 +1,15 @@
+import json
+from dataclasses import asdict
+from pathlib import Path
+
 from mlx_lm import load, generate
 
 from moe_trace.tracer import trace_qwen3_moe
 
 
 MODEL = "mlx-community/Qwen3-30B-A3B-4bit"
+
+OUTPUT_PATH = Path("results/routing_trace.jsonl")
 
 
 def main():
@@ -21,14 +27,25 @@ def main():
     print("\nMODEL OUTPUT:")
     print(response)
 
-    print(f"\nCaptured routing events: {len(trace.events)}")
+    print(f"\nCaptured token-layer routing events: {len(trace.events)}")
 
-    for event in trace.events[:5]:
+    print("\nFirst 10 routing events:")
+
+    for event in trace.events[:10]:
         print(
-            f"Layer {event.layer}: "
-            f"experts={event.expert_ids} "
-            f"scores={event.scores}"
+            f"phase={event.phase:<7} "
+            f"token={event.token_index:<3} "
+            f"layer={event.layer:<2} "
+            f"experts={event.expert_ids}"
         )
+
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    with OUTPUT_PATH.open("w") as f:
+        for event in trace.events:
+            f.write(json.dumps(asdict(event)) + "\n")
+
+    print(f"\nSaved routing trace to: {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
