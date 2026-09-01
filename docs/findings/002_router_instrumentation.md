@@ -84,3 +84,47 @@ Example expert selection:
 ```text
 Layer 0:
 [113, 64, 47, 83, 56, 34, 63, 21]
+
+The values were in the expected range for 128 experts.
+
+Each routing decision selected 8 experts.
+
+Interpretation
+
+The instrumentation test was successful.
+
+MoE Trace can observe the internal expert-routing decisions of the selected Qwen3 model.
+
+The instrumentation does not require a permanent change to MLX-LM.
+
+This is important because:
+
+MLX-LM can be upgraded independently;
+the MoE Trace code remains separate from the runtime;
+the method can be tested and maintained as project code.
+
+The first raw trace stored one event for each MoE block invocation.
+
+This format was sufficient to prove that instrumentation works.
+
+It was not sufficient for later statistical analysis.
+
+The next step was to normalize the data to one record for each token and layer.
+
+Decision
+
+CONTINUE
+
+The instrumentation requirement was:
+
+Record expert selections during real inference without a permanent change to MLX-LM.
+
+The tracer met this requirement.
+
+Status
+
+Project stage: Router instrumentation
+
+## Outcome: Pass
+
+Next stage: Trace normalization and validation
