@@ -313,6 +313,180 @@ def _simulate_markov(
 
     return hits, misses
 
+def _simulate_runtime_lru(
+    sequence: list[set[int]],
+    capacity: int,
+) -> tuple[int, int]:
+    """
+    Runtime-faithful token-level LRU approximation.
+
+    All experts required by the current request are protected
+    until that request has completed.
+
+    When capacity is exceeded, eviction can remove only experts
+    that are not part of the current request.
+    """
+
+    cache: set[int] = set()
+    last_used: dict[int, int] = {}
+
+    hits = 0
+    misses = 0
+
+    for step, requested in enumerate(sequence):
+        hits += len(requested & cache)
+        misses += len(requested - cache)
+
+        for expert in requested:
+            last_used[expert] = step
+
+        candidates = cache | requested
+
+        if len(candidates) > capacity:
+            evictable = candidates - requested
+
+            remove_count = (
+                len(candidates) - capacity
+            )
+
+            if remove_count > len(evictable):
+                raise ValueError(
+                    "capacity is too small to protect "
+                    "the current expert request"
+                )
+
+            victims = sorted(
+                evictable,
+                key=lambda expert: (
+                    last_used.get(expert, -1),
+                    expert,
+                ),
+            )[:remove_count]
+
+            cache = (
+                candidates - set(victims)
+            )
+
+        else:
+            cache = candidates
+
+    return hits, misses
+
+
+def _simulate_runtime_markov(
+    sequence: list[set[int]],
+    capacity: int,
+) -> tuple[int, int]:
+    """
+    Runtime-faithful causal Markov cache.
+
+    The Markov prediction is identical in form to
+    _simulate_markov(), but experts required by the current
+    request cannot be eviction victims.
+
+    This models a runtime where the persistent cache is also
+    the physical working storage used by the current MoE call.
+    """
+
+    cache: set[int] = set()
+
+    transitions: dict[
+        int,
+        Counter[int],
+    ] = defaultdict(Counter)
+
+    frequency: Counter[int] = Counter()
+    last_used: dict[int, int] = {}
+
+    hits = 0
+    misses = 0
+
+    previous_request: set[int] | None = None
+
+    for step, requested in enumerate(sequence):
+        hits += len(requested & cache)
+        misses += len(requested - cache)
+
+        # Learn previous -> current only after current
+        # routing has actually been observed.
+        if previous_request is not None:
+            for previous_expert in previous_request:
+                for current_expert in requested:
+                    transitions[
+                        previous_expert
+                    ][current_expert] += 1
+
+        for expert in requested:
+            frequency[expert] += 1
+            last_used[expert] = step
+
+        candidates = cache | requested
+
+        if len(candidates) > capacity:
+            # Current experts must remain resident until the
+            # current SwitchGLU operation has completed.
+            evictable = candidates - requested
+
+            remove_count = (
+                len(candidates) - capacity
+            )
+
+            if remove_count > len(evictable):
+                raise ValueError(
+                    "capacity is too small to protect "
+                    "the current expert request"
+                )
+
+            predictive_score: dict[
+                int,
+                int,
+            ] = {}
+
+            for candidate in evictable:
+                score = 0
+
+                for current_expert in requested:
+                    score += transitions[
+                        current_expert
+                    ][candidate]
+
+                predictive_score[
+                    candidate
+                ] = score
+
+            # Match the original Markov simulator's
+            # ranking exactly:
+            #
+            # predictive score
+            # historical frequency
+            # recency
+            # expert id
+            #
+            # Lowest-ranked evictable experts are removed.
+            victims = sorted(
+                evictable,
+                key=lambda expert: (
+                    predictive_score[expert],
+                    frequency[expert],
+                    last_used.get(
+                        expert,
+                        -1,
+                    ),
+                    expert,
+                ),
+            )[:remove_count]
+
+            cache = (
+                candidates - set(victims)
+            )
+
+        else:
+            cache = candidates
+
+        previous_request = requested
+
+    return hits, misses
+
 def _simulate_history_markov(
     sequence: list[set[int]],
     capacity: int,
@@ -453,6 +627,18 @@ def simulate_policy(
 
         elif policy == "markov":
             hits, misses = _simulate_markov(
+            sequence,
+            capacity,
+            )
+
+        elif policy == "runtime_lru":
+            hits, misses = _simulate_runtime_lru(
+                sequence,
+                capacity,
+            )
+
+        elif policy == "runtime_markov":
+            hits, misses = _simulate_runtime_markov(
             sequence,
             capacity,
             )
